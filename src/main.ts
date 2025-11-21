@@ -15,9 +15,14 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new GlobalExceptionFilter());
 
-  // Swagger
-  const doc = buildSwagger(app);
-  SwaggerModule.setup('docs', app, doc);
+  // Swagger habilitado en desarrollo o si ENABLE_SWAGGER=true
+  if (
+    process.env.ENABLE_SWAGGER === 'true' ||
+    (process.env.NODE_ENV ?? 'development') !== 'production'
+  ) {
+    const doc = buildSwagger(app);
+    SwaggerModule.setup('docs', app, doc);
+  }
 
   await app.listen(process.env.PORT || 3000, '0.0.0.0');
 }

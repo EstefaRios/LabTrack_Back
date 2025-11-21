@@ -1,28 +1,25 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { MongooseModule } from '@nestjs/mongoose';
 import { OrdenesController } from './ordenes.controller';
 import { OrdenesService } from './ordenes.service';
-import {
-  Orden,
-  Tarjetero,
-  Procedimiento,
-  Grupo,
-  Prueba,
-  OrdenResultado,
-} from './ordenes.modelo';
-import { Persona } from '../paciente/paciente.modelo';
+// Eliminado soporte TypeORM; solo usamos Mongoose
 import { ResultadosModule } from '../resultados/resultados.module';
+import {
+  Orden as OrdenMongo,
+  OrdenSchema,
+  Tarjetero as TarjeteroMongo,
+  TarjeteroSchema,
+  Persona as PersonaMongo,
+  PersonaSchema,
+} from '../database/mongo/schemas';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      Orden,
-      Tarjetero,
-      Procedimiento,
-      Grupo,
-      Prueba,
-      OrdenResultado,
-      Persona,
+    // Mongoose modelos para listar y resultados en Mongo
+    MongooseModule.forFeature([
+      { name: OrdenMongo.name, schema: OrdenSchema },
+      { name: TarjeteroMongo.name, schema: TarjeteroSchema },
+      { name: PersonaMongo.name, schema: PersonaSchema },
     ]),
     ResultadosModule,
   ],

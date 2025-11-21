@@ -1,55 +1,60 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Repository,
-  FindOptionsWhere,
-  Like,
-  Between,
-  MoreThanOrEqual,
-  LessThanOrEqual,
-} from 'typeorm';
-import { Auditoria } from './auditoria.modelo';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Auditoria, AuditoriaDocument } from '../database/mongo/schemas/auditoria.schema';
 import { ListaAuditoriaQuery } from './auditoria.dto';
 
 @Injectable()
 export class AuditService {
   constructor(
-    @InjectRepository(Auditoria) private repo: Repository<Auditoria>,
+    @InjectModel(Auditoria.name)
+    private auditModel: Model<AuditoriaDocument>,
   ) {}
 
   async log(entry: Partial<Auditoria>) {
-    return this.repo.save(this.repo.create(entry));
+    const last = await this.auditModel
+      .find({}, { id: 1 })
+      .sort({ id: -1 })
+      .limit(1)
+      .lean();
+    const nextId = (last[0]?.id ?? 0) + 1;
+    const doc = new this.auditModel({
+      id: nextId,
+      createdAt: new Date(),
+      ...entry,
+    });
+    await doc.save();
+    return doc.toObject();
   }
 
   async listar(q: ListaAuditoriaQuery) {
-    const where: FindOptionsWhere<Auditoria> = {};
+    const where: any = {};
 
     // Filtros de texto
-    if (q.accion) where.accion = Like(`%${q.accion}%`);
-    if (q.nombreTabla) where.tableName = Like(`%${q.nombreTabla}%`);
+    if (q.accion) where.accion = { $regex: new RegExp(q.accion, 'i') };
+    if (q.nombreTabla) where.tableName = { $regex: new RegExp(q.nombreTabla, 'i') };
     if (q.idUsuario) where.idUsuario = q.idUsuario;
 
     // Filtros de fecha
-    if (q.desde && q.hasta) {
-      where.createdAt = Between(
-        new Date(q.desde),
-        new Date(q.hasta + 'T23:59:59.999Z'),
-      );
-    } else if (q.desde) {
-      where.createdAt = MoreThanOrEqual(new Date(q.desde));
-    } else if (q.hasta) {
-      where.createdAt = LessThanOrEqual(new Date(q.hasta + 'T23:59:59.999Z'));
-    }
+    if (q.desde) where.createdAt = { ...(where.createdAt || {}), $gte: new Date(q.desde) };
+    if (q.hasta)
+      where.createdAt = {
+        ...(where.createdAt || {}),
+        $lte: new Date(q.hasta + 'T23:59:59.999Z'),
+      };
 
-    const take = Math.min(q.limite || 10, 100); // Máximo 100 registros
+    const take = Math.min(q.limite || 10, 100);
     const skip = ((q.pagina || 1) - 1) * take;
 
-    const [data, total] = await this.repo.findAndCount({
-      where,
-      order: { createdAt: 'DESC' },
-      take,
-      skip,
-    });
+    const [data, total] = await Promise.all([
+      this.auditModel
+        .find(where)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(take)
+        .lean(),
+      this.auditModel.countDocuments(where),
+    ]);
 
     const totalPaginas = Math.ceil(total / take);
 

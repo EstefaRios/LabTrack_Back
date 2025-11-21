@@ -1,6 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import {
   Orden,
   Tarjetero,
@@ -11,20 +13,42 @@ import {
 } from './ordenes.modelo';
 import { Persona } from '../paciente/paciente.modelo';
 import { ResultadosService } from '../resultados/resultados.service';
+import { ResultadosMongoService } from '../resultados/resultados.mongo.service';
+import {
+  Orden as OrdenMongo,
+  OrdenDocument,
+  Tarjetero as TarjeteroMongo,
+  TarjeteroDocument,
+  Persona as PersonaMongo,
+  PersonaDocument,
+} from '../database/mongo/schemas';
 
 @Injectable()
 export class OrdenesService {
   constructor(
-    @InjectRepository(Orden) private ordenRepo: Repository<Orden>,
-    @InjectRepository(Tarjetero) private tarjRepo: Repository<Tarjetero>,
-    @InjectRepository(Procedimiento)
-    private procRepo: Repository<Procedimiento>,
-    @InjectRepository(Grupo) private grupoRepo: Repository<Grupo>,
-    @InjectRepository(Prueba) private pruebaRepo: Repository<Prueba>,
-    @InjectRepository(OrdenResultado)
-    private resultadoRepo: Repository<OrdenResultado>,
-    @InjectRepository(Persona) private personaRepo: Repository<Persona>,
+    // Primero dependencias requeridas
     private resultadosService: ResultadosService,
+    @Optional() @InjectRepository(Orden)
+    private ordenRepo?: Repository<Orden>,
+    @Optional() @InjectRepository(Tarjetero)
+    private tarjRepo?: Repository<Tarjetero>,
+    @Optional() @InjectRepository(Procedimiento)
+    private procRepo?: Repository<Procedimiento>,
+    @Optional() @InjectRepository(Grupo)
+    private grupoRepo?: Repository<Grupo>,
+    @Optional() @InjectRepository(Prueba)
+    private pruebaRepo?: Repository<Prueba>,
+    @Optional() @InjectRepository(OrdenResultado)
+    private resultadoRepo?: Repository<OrdenResultado>,
+    @Optional() @InjectRepository(Persona)
+    private personaRepo?: Repository<Persona>,
+    @Optional() private resultadosMongo?: ResultadosMongoService,
+    // Modelos Mongoose para listar en Mongo
+    @InjectModel(OrdenMongo.name) private ordenModel?: Model<OrdenDocument>,
+    @InjectModel(TarjeteroMongo.name)
+    private tarjModel?: Model<TarjeteroDocument>,
+    @InjectModel(PersonaMongo.name)
+    private personaModel?: Model<PersonaDocument>,
   ) {}
 
   async listar(
@@ -37,14 +61,84 @@ export class OrdenesService {
       asc?: boolean;
     },
   ) {
-    const tarjetas = await this.tarjRepo.find({
+    // Si estamos en modo Mongo o no hay repos TypeORM, usar Mongoose
+    if (
+      process.env.DB_DRIVER === 'mongo' ||
+      !this.ordenRepo ||
+      !this.tarjRepo ||
+      !this.personaRepo
+    ) {
+      if (!this.tarjModel || !this.ordenModel) {
+        return { total: 0, pagina: 1, data: [] };
+      }
+      const tarjetas = await this.tarjModel
+        .find({ $or: [{ idPersona: +personaId }, { id_persona: +personaId }] }, { id: 1 })
+        .lean();
+      const historias = tarjetas.map((t: any) => t.id);
+      if (historias.length === 0) return { total: 0, pagina: 1, data: [] };
+
+      const take = 10;
+      const skip = ((q.pagina ?? 1) - 1) * take;
+      const where: any = { $or: [{ idHistoria: { $in: historias } }, { id_historia: { $in: historias } }] };
+      if (q.desde) where.fecha = { ...(where.fecha || {}), $gte: new Date(q.desde) };
+      if (q.hasta)
+        where.fecha = {
+          ...(where.fecha || {}),
+          $lte: new Date(q.hasta + 'T23:59:59.999Z'),
+        };
+      if (q.busca)
+        where.orden = { $regex: new RegExp(q.busca, 'i') };
+
+      const [rows, total] = await Promise.all([
+        this.ordenModel
+          .find(where, { id: 1, fecha: 1, orden: 1, idHistoria: 1, id_historia: 1 })
+          .sort({ fecha: q.asc ? 1 : -1 })
+          .skip(skip)
+          .limit(take)
+          .lean(),
+        this.ordenModel.countDocuments(where),
+      ]);
+
+      // Obtener documento (numeroid) desde Persona
+      const historiaIds = Array.from(new Set(rows.map((r: any) => r.idHistoria)));
+      const tarjDocs = await this.tarjModel
+        .find({ id: { $in: historiaIds } }, { id: 1, idPersona: 1 })
+        .lean();
+      const personaIds = Array.from(
+        new Set(tarjDocs.map((t: any) => t.idPersona)),
+      );
+      const personas = this.personaModel
+        ? await this.personaModel
+            .find({ id: { $in: personaIds } }, { id: 1, numeroId: 1, numeroid: 1 })
+            .lean()
+        : [];
+      const iTarj = new Map(tarjDocs.map((t: any) => [t.id, t.idPersona]));
+      const iPersona = new Map(
+        personas.map((p: any) => [p.id, p.numeroId ?? p.numeroid ?? ''])
+      );
+
+      const data = rows.map((o: any) => {
+        const historiaId = o.idHistoria ?? o.id_historia;
+        return {
+          id: o.id,
+          fecha: o.fecha,
+          numero: o.orden,
+          documento: iPersona.get(iTarj.get(historiaId)) || '',
+        };
+      });
+
+      return { total, pagina: q.pagina ?? 1, data };
+    }
+
+    // Caso TypeORM (si aún está disponible)
+    const tarjetas = await this.tarjRepo!.find({
       where: { idPersona: +personaId },
       select: ['id'],
     });
     const historias = tarjetas.map((t) => t.id);
     if (historias.length === 0) return { total: 0, pagina: 1, data: [] };
 
-    const qb = this.ordenRepo
+    const qb = this.ordenRepo!
       .createQueryBuilder('o')
       .leftJoin('fac_m_tarjetero', 't', 't.id = o.id_historia')
       .leftJoin('gen_m_persona', 'p', 'p.id = t.id_persona')
@@ -73,6 +167,18 @@ export class OrdenesService {
 
   async resultados(idOrden: number) {
     try {
+      // Si estamos en modo Mongo, usar el servicio Mongo
+      if (
+        process.env.DB_DRIVER === 'mongo' ||
+        process.env.MONGO_URI ||
+        process.env.MONGODB_URI
+      ) {
+        if (!this.resultadosMongo) {
+          return { grupos: [] };
+        }
+        return await this.resultadosMongo.getResultadosCompletos(idOrden);
+      }
+
       // Usar el servicio mejorado para obtener resultados
       const resultadosCompletos =
         await this.resultadosService.getResultadosCompletos(idOrden);
@@ -172,9 +278,11 @@ export class OrdenesService {
 
   // Método original como fallback
   private async resultadosOriginal(idOrden: number) {
+    if (!this.ordenRepo) return { grupos: [] };
     const orden = await this.ordenRepo.findOne({ where: { id: +idOrden } });
     if (!orden) return { grupos: [] };
 
+    if (!this.resultadoRepo) return { grupos: [] };
     const rows = await this.resultadoRepo.find({
       where: { idOrden },
       order: { idProcedimiento: 'ASC', idPrueba: 'ASC', fecha: 'ASC' },
@@ -185,12 +293,14 @@ export class OrdenesService {
     const procIds = [...new Set(rows.map((r) => r.idProcedimiento))];
     const pruebaIds = [...new Set(rows.map((r) => r.idPrueba))];
 
+    if (!this.procRepo || !this.pruebaRepo) return { grupos: [] };
     const [procedimientos, pruebas] = await Promise.all([
       this.procRepo.find({ where: { id: In(procIds) } }),
       this.pruebaRepo.find({ where: { id: In(pruebaIds) } }),
     ]);
 
     const gruposIds = [...new Set(procedimientos.map((p) => p.idGrupo))];
+    if (!this.grupoRepo) return { grupos: [] };
     const grupos = await this.grupoRepo.find({ where: { id: In(gruposIds) } });
 
     const iProc = new Map(procedimientos.map((p) => [p.id, p]));

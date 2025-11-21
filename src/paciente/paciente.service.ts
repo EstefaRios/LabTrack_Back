@@ -1,88 +1,93 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Persona } from './paciente.modelo';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Persona, PersonaDocument, Tarjetero, TarjeteroDocument, ListaOpcion, ListaOpcionDocument, Eps, EpsDocument } from '../database/mongo/schemas';
 
 @Injectable()
 export class PacienteService {
-  constructor(@InjectRepository(Persona) private repo: Repository<Persona>) {}
+  constructor(
+    @InjectModel(Persona.name) private personaModel: Model<PersonaDocument>,
+    @InjectModel(Tarjetero.name) private tarjModel: Model<TarjeteroDocument>,
+    @InjectModel(ListaOpcion.name) private listaModel: Model<ListaOpcionDocument>,
+    @InjectModel(Eps.name) private epsModel: Model<EpsDocument>,
+  ) {}
 
   async getPerfil(personaId: number) {
-    const result = await this.repo
-      .createQueryBuilder('p')
-      .leftJoin(
-        'gen_p_listaopcion',
-        'tipo',
-        "p.id_tipoid = tipo.id AND tipo.variable = 'TipoIdentificacion'",
+    const persona = await this.personaModel
+      .findOne({ id: +personaId })
+      .lean();
+    if (!persona) throw new NotFoundException('Paciente no encontrado');
+    
+    const tarjetero = await this.tarjModel
+      .findOne({ $or: [{ idPersona: +personaId }, { id_persona: +personaId }] })
+      .lean();
+    
+    const pick = (obj: any, names: string[]) => {
+      for (const n of names) {
+        const v = obj?.[n];
+        if (v !== undefined && v !== null) return v;
+      }
+      return undefined;
+    };
+
+    const idTipoId = pick(persona, ['idTipoId', 'id_tipoid']);
+    const numeroId = pick(persona, ['numeroId', 'numeroid', 'num_documento', 'documento']);
+    const fechaNac = pick(persona, ['fechaNac', 'fechanac', 'fecha_nac', 'fecha_nacimiento']);
+    const idSexoBiologico = pick(persona, ['idSexoBiologico', 'id_sexobiologico']);
+    const direccion = pick(persona, ['direccion', 'direccion_residencia']);
+    const telMovil = pick(persona, ['telMovil', 'tel_movil', 'telefono']);
+    const email = pick(persona, ['email', 'correo']);
+
+    const tipoId = await this.listaModel
+      .findOne(
+        { variable: 'TipoIdentificacion', id: idTipoId },
+        { descripcion: 1 },
       )
-      .leftJoin(
-        'gen_p_listaopcion',
-        'sexo',
-        "p.id_sexobiologico = sexo.id AND sexo.variable = 'SexoBiologico'",
+      .lean();
+    const sexo = await this.listaModel
+      .findOne(
+        { variable: 'SexoBiologico', id: idSexoBiologico },
+        { nombre: 1 },
       )
-      .leftJoin('fac_m_tarjetero', 't', 'p.id = t.id_persona')
-      .leftJoin('gen_p_eps', 'eps', 't.id_eps = eps.id')
-      .select([
-        'p.id as p_id',
-        'p.id_tipoid as p_id_tipoid',
-        'p.numeroid as p_numeroid',
-        'p.nombre1 as p_nombre1',
-        'p.nombre2 as p_nombre2',
-        'p.apellido1 as p_apellido1',
-        'p.apellido2 as p_apellido2',
-        'p.fechanac as p_fechanac',
-        'p.id_sexobiologico as p_id_sexobiologico',
-        'p.direccion as p_direccion',
-        'p.tel_movil as p_tel_movil',
-        'p.email as p_email',
-        'tipo.descripcion as tipoIdDescripcion',
-        'sexo.nombre as sexoDescripcion',
-        'eps.codigo as eps_codigo',
-        'eps.razonsocial as eps_nombre',
-      ])
-      .where('p.id = :personaId', { personaId: +personaId })
-      .getRawOne();
+      .lean();
 
-    if (!result) throw new NotFoundException('Paciente no encontrado');
+    let epsInfo: { codigo?: string; razonsocial?: string } = {};
+    const idEps = pick(tarjetero, ['idEps', 'id_eps']);
+    if (idEps) {
+      const eps = await this.epsModel
+        .findOne({ id: idEps }, { codigo: 1, razonsocial: 1 })
+        .lean();
+      epsInfo = eps ?? {};
+    }
 
-    // Debug: Log para ver los datos exactos que devuelve la consulta
-    console.log('=== DEBUG PERFIL ===');
-    console.log('result.tipoIdDescripcion:', result.tipoIdDescripcion);
-    console.log('result.sexoDescripcion:', result.sexoDescripcion);
-    console.log('result.p_id_tipoid:', result.p_id_tipoid);
-    console.log('result.p_id_sexobiologico:', result.p_id_sexobiologico);
-    console.log('Full result:', result);
-    console.log('===================');
-
-    // Mapear los campos de la base de datos a los nombres esperados por el frontend
     return {
-      id: result.p_id,
-      tipo: result.tipoiddescripcion || 'No especificado',
-      tipoId: result.tipoiddescripcion || 'No especificado',
-      numeroId: result.p_numeroid,
+      id: persona.id,
+      tipo: tipoId?.descripcion || 'No especificado',
+      tipoId: tipoId?.descripcion || 'No especificado',
+      numeroId,
       nombreCompleto: [
-        result.p_nombre1,
-        result.p_nombre2,
-        result.p_apellido1,
-        result.p_apellido2,
+        persona.nombre1,
+        persona.nombre2,
+        persona.apellido1,
+        persona.apellido2,
       ]
         .filter(Boolean)
         .join(' '),
-      nombre1: result.p_nombre1,
-      nombre2: result.p_nombre2,
-      apellido1: result.p_apellido1,
-      apellido2: result.p_apellido2,
-      fechaNacimiento: result.p_fechanac,
-      fechaNac: result.p_fechanac,
-      sexo: result.sexodescripcion || 'No especificado',
-      idSexoBiologico: result.p_id_sexobiologico,
-      direccion: result.p_direccion,
-      telefono: result.p_tel_movil,
-      telMovil: result.p_tel_movil,
-      email: result.p_email,
-      eps_codigo: result.eps_codigo,
-      eps_nombre: result.eps_nombre,
-      eps: result.eps_nombre || 'No especificado',
+      nombre1: persona.nombre1,
+      nombre2: persona.nombre2,
+      apellido1: persona.apellido1,
+      apellido2: persona.apellido2,
+      fechaNacimiento: fechaNac,
+      fechaNac: fechaNac,
+      sexo: sexo?.nombre || 'No especificado',
+      idSexoBiologico,
+      direccion,
+      telefono: telMovil,
+      telMovil,
+      email,
+      eps_codigo: epsInfo.codigo,
+      eps_nombre: epsInfo.razonsocial,
+      eps: epsInfo.razonsocial || 'No especificado',
     };
   }
 
@@ -91,41 +96,50 @@ export class PacienteService {
     limite: number = 50,
     busqueda?: string,
   ) {
-    const qb = this.repo
-      .createQueryBuilder('p')
-      .leftJoin(
-        'gen_p_listaopcion',
-        'l',
-        "p.id_tipoid = l.id AND l.variable = 'TipoIdentificacion'",
-      )
-      .select([
-        'p.id',
-        'p.numeroId',
-        'p.nombre1',
-        'p.nombre2',
-        'p.apellido1',
-        'p.apellido2',
-        'p.fechaNac',
-        'l.abreviacion as tipoDocumento',
-        'l.descripcion as tipoDocumentoDesc',
-      ]);
-
+    const where: any = {};
     if (busqueda) {
-      qb.where(
-        '(p.nombre1 ILIKE :busqueda OR p.nombre2 ILIKE :busqueda OR p.apellido1 ILIKE :busqueda OR p.apellido2 ILIKE :busqueda OR p.numeroId ILIKE :busqueda)',
-        { busqueda: `%${busqueda}%` },
-      );
+      const rx = new RegExp(busqueda, 'i');
+      where.$or = [
+        { nombre1: rx },
+        { nombre2: rx },
+        { apellido1: rx },
+        { apellido2: rx },
+        { numeroId: rx },
+      ];
     }
 
-    qb.orderBy('p.apellido1', 'ASC')
-      .addOrderBy('p.apellido2', 'ASC')
-      .addOrderBy('p.nombre1', 'ASC');
-
     const skip = (pagina - 1) * limite;
-    const [pacientes, total] = await qb
-      .skip(skip)
-      .take(limite)
-      .getManyAndCount();
+    const [pacientes, total] = await Promise.all([
+      this.personaModel
+        .find(where, {
+          id: 1,
+          numeroId: 1,
+          nombre1: 1,
+          nombre2: 1,
+          apellido1: 1,
+          apellido2: 1,
+          fechaNac: 1,
+          idTipoId: 1,
+        })
+        .sort({ apellido1: 1, apellido2: 1, nombre1: 1 })
+        .skip(skip)
+        .limit(limite)
+        .lean(),
+      this.personaModel.countDocuments(where),
+    ]);
+
+    // Obtener abreviación/descripcion del tipo de documento en lote
+    const tipoIds = Array.from(
+      new Set(pacientes.map((p) => p.idTipoId).filter(Boolean)),
+    );
+    const tipos = await this.listaModel
+      .find(
+        { variable: 'TipoIdentificacion', id: { $in: tipoIds } },
+        { id: 1, abreviacion: 1, descripcion: 1 },
+      )
+      .lean();
+    const mapaTipos = new Map<number, { abreviacion?: string; descripcion?: string }>();
+    tipos.forEach((t) => mapaTipos.set(t.id, { abreviacion: t.abreviacion, descripcion: t.descripcion }));
 
     return {
       data: pacientes.map((p) => ({
@@ -139,12 +153,12 @@ export class PacienteService {
         apellido1: p.apellido1,
         apellido2: p.apellido2,
         fechaNac: p.fechaNac,
-        tipoDocumento: p['tipoDocumento'],
-        tipoDocumentoDesc: p['tipoDocumentoDesc'],
+        tipoDocumento: mapaTipos.get(p.idTipoId)?.abreviacion,
+        tipoDocumentoDesc: mapaTipos.get(p.idTipoId)?.descripcion,
       })),
       total,
       pagina,
       totalPaginas: Math.ceil(total / limite),
-    };
+    } as any;
   }
 }

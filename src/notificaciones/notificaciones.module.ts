@@ -1,11 +1,15 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { MongooseModule } from '@nestjs/mongoose';
 import { NotificacionesController } from './notificaciones.controller';
 import { NotificacionesService } from './notificaciones.service';
-import { Notificacion } from './notificaciones.modelo';
+import { Notificacion, NotificacionSchema } from '../database/mongo/schemas/notificacion.schema';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Notificacion])],
+  imports: [
+    MongooseModule.forFeature([
+      { name: Notificacion.name, schema: NotificacionSchema },
+    ]),
+  ],
   controllers: [NotificacionesController],
   providers: [NotificacionesService],
   exports: [NotificacionesService],

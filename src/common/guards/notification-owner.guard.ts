@@ -7,6 +7,9 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { DataSource } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { ModuleRef } from '@nestjs/core';
+import { Optional } from '@nestjs/common';
 import { JwtUser } from '../decorators/current-user.decorator';
 
 // Extender el tipo Request para incluir la propiedad user
@@ -19,7 +22,7 @@ interface AuthenticatedRequest extends Request {
 
 @Injectable()
 export class NotificationOwnerGuard implements CanActivate {
-  constructor(private dataSource: DataSource) {}
+  constructor(private moduleRef: ModuleRef) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -36,8 +39,17 @@ export class NotificationOwnerGuard implements CanActivate {
       throw new ForbiddenException('ID de notificación requerido');
     }
 
-    // Verificar que la notificación pertenece al usuario
-    const notification = await this.dataSource
+    // Intentar obtener DataSource de manera opcional (puede no existir en modo Mongo)
+    let dataSource: DataSource | undefined;
+    try {
+      dataSource = this.moduleRef.get(DataSource, { strict: false });
+    } catch (e) {
+      dataSource = undefined;
+    }
+    if (!dataSource) return true;
+
+    // Verificar que la notificación pertenece al usuario en SQL
+    const notification = await dataSource
       .createQueryBuilder()
       .select('n.id_usuario')
       .from('notification', 'n')

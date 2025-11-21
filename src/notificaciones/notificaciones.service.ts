@@ -1,26 +1,42 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
-import { Notificacion } from './notificaciones.modelo';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import {
+  Notificacion,
+  NotificacionDocument,
+} from '../database/mongo/schemas/notificacion.schema';
 import { ListarNotificacionesQuery } from './notificaciones.dto';
 
 @Injectable()
 export class NotificacionesService {
   constructor(
-    @InjectRepository(Notificacion) private repo: Repository<Notificacion>,
+    @InjectModel(Notificacion.name)
+    private notifModel: Model<NotificacionDocument>,
   ) {}
 
   async crear(dto: any) {
-    // Mapeo de DTO español a entidad inglés
-    const entity = this.repo.create({
+    // Generar ID incremental sencillo (basado en el mayor existente)
+    const last = await this.notifModel
+      .find({}, { id: 1 })
+      .sort({ id: -1 })
+      .limit(1)
+      .lean();
+    const nextId = (last[0]?.id ?? 0) + 1;
+
+    const doc = new this.notifModel({
+      id: nextId,
       idUsuario: dto.idUsuario,
       type: dto.tipo || 'info',
       titulo: dto.titulo,
       mensaje: dto.mensaje,
       data: dto.datos,
       metadata: dto.metadata ?? null,
+      leida: false,
+      fechaCreacion: new Date(),
+      fechaLectura: null,
     });
-    return this.repo.save(entity);
+    await doc.save();
+    return doc.toObject();
   }
 
   async listar(query: ListarNotificacionesQuery) {
@@ -33,23 +49,22 @@ export class NotificacionesService {
     if (tipo) where.type = tipo;
 
     // Filtros de fecha
-    if (desde && hasta) {
-      where.fechaCreacion = Between(
-        new Date(desde),
-        new Date(hasta + 'T23:59:59.999Z'),
-      );
-    } else if (desde) {
-      where.fechaCreacion = MoreThanOrEqual(new Date(desde));
-    } else if (hasta) {
-      where.fechaCreacion = LessThanOrEqual(new Date(hasta + 'T23:59:59.999Z'));
-    }
+    if (desde) where.fechaCreacion = { ...(where.fechaCreacion || {}), $gte: new Date(desde) };
+    if (hasta)
+      where.fechaCreacion = {
+        ...(where.fechaCreacion || {}),
+        $lte: new Date(hasta + 'T23:59:59.999Z'),
+      };
 
-    const [rows, total] = await this.repo.findAndCount({
-      where,
-      order: { fechaCreacion: 'DESC' },
-      take,
-      skip,
-    });
+    const [rows, total] = await Promise.all([
+      this.notifModel
+        .find(where)
+        .sort({ fechaCreacion: -1 })
+        .skip(skip)
+        .limit(take)
+        .lean(),
+      this.notifModel.countDocuments(where),
+    ]);
 
     // Mapeo de entidad inglés a respuesta español
     const data = rows.map((n) => ({
@@ -74,25 +89,27 @@ export class NotificacionesService {
   }
 
   async conteoNoLeidas(idUsuario: number) {
-    const count = await this.repo.count({
-      where: { idUsuario, leida: false },
+    const count = await this.notifModel.countDocuments({
+      idUsuario,
+      leida: false,
     });
     return { conteo: count };
   }
 
   async marcarLeida(id: number, leida = true) {
-    const notif = await this.repo.findOne({ where: { id } });
+    const notif = await this.notifModel.findOne({ id }).lean();
     if (!notif) throw new NotFoundException('Notificación no encontrada');
-
-    notif.leida = leida;
-    notif.fechaLectura = leida ? new Date() : null;
-    return this.repo.save(notif);
+    await this.notifModel.updateOne(
+      { id },
+      { $set: { leida, fechaLectura: leida ? new Date() : null } },
+    );
+    return { ok: true } as any;
   }
 
   async eliminar(id: number) {
-    const n = await this.repo.findOne({ where: { id } });
-    if (!n) throw new NotFoundException('Notificación no encontrada');
-    await this.repo.remove(n);
+    const res = await this.notifModel.deleteOne({ id });
+    if (res.deletedCount === 0)
+      throw new NotFoundException('Notificación no encontrada');
     return { ok: true };
   }
 }
